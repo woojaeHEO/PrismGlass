@@ -19,7 +19,7 @@ dependencyResolutionManagement {
 Add the dependency.
 
 ```kotlin
-implementation("com.github.woojaeHEO:PrismGlass:1.1.1")
+implementation("com.github.woojaeHEO:PrismGlass:1.2.0")
 ```
 
 ## Surface
@@ -31,6 +31,33 @@ PrismGlassInteractiveSurface(onClick = onClick) {
 ```
 
 The `Modifier.prismGlass` extension can decorate any Compose component.
+
+## Backdrop
+
+`PrismGlassBackdropHost` keeps the captured background and glass overlays in separate layers. Any Compose content can be used in the background and surface slots.
+
+```kotlin
+PrismGlassBackdropHost(
+    background = {
+        Image(
+            painter = painterResource(R.drawable.background),
+            contentDescription = null,
+            modifier = Modifier.fillMaxSize(),
+        )
+    },
+) { backdrop ->
+    PrismGlassBackdropSurface(
+        state = backdrop,
+        modifier = Modifier.align(Alignment.BottomCenter).padding(20.dp),
+    ) {
+        Row(Modifier.padding(16.dp)) {
+            Text("Any Compose content")
+        }
+    }
+}
+```
+
+Use `Modifier.prismGlassBackdropSource` when the source and overlay are already separate siblings. Android 13 and newer uses an AGSL refraction shader chained with GPU blur. Android 12 uses GPU blur. Android 8 through 11 keeps the translucent surface without a runtime effect.
 
 ## Navigation
 
@@ -46,7 +73,7 @@ PrismGlassNavigationBar(
 }
 ```
 
-The navigation component supports finger tracking, release selection, arbitrary item content, a custom indicator slot, reduced motion, RTL layouts, accessibility tab semantics, and any item model with stable equality.
+The navigation component supports AGSL lens refraction on Android 13 and newer, velocity-driven elastic stretching, finger tracking, release selection, arbitrary item content, a custom indicator slot, reduced motion, RTL layouts, accessibility tab semantics, and any item model with stable equality.
 
 ## Requirements
 
