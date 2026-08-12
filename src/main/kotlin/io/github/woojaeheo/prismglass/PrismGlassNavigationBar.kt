@@ -132,8 +132,6 @@ fun <T> PrismGlassNavigationBar(
 
     BoxWithConstraints(
         modifier.fillMaxWidth().height(style.height)
-            .background(style.surfaceFill, style.surface.shape)
-            .prismGlass(style.surface)
             .onSizeChanged { containerWidthPx = it.width.toFloat() }
             .pointerInput(
                 items,
@@ -205,6 +203,11 @@ fun <T> PrismGlassNavigationBar(
                 }
             },
     ) {
+        Box(
+            Modifier.matchParentSize()
+                .background(style.surfaceFill, style.surface.shape)
+                .prismGlass(style.surface),
+        )
         val itemWidth = maxWidth / items.size
         val containerWidth = maxWidth
         val indicatorDiameter = (style.height - style.indicatorPadding * 2).coerceAtMost(itemWidth - style.indicatorPadding * 2)

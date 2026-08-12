@@ -19,7 +19,7 @@ dependencyResolutionManagement {
 Add the dependency.
 
 ```kotlin
-implementation("com.github.woojaeHEO:PrismGlass:1.2.2")
+implementation("com.github.woojaeHEO:PrismGlass:1.2.3")
 ```
 
 ## Surface

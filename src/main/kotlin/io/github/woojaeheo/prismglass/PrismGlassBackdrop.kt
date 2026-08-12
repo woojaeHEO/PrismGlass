@@ -93,6 +93,7 @@ fun PrismGlassBackdropSurface(
     blurRadius: Dp = 18.dp,
     refraction: Float = .16f,
     velocity: Float = 0f,
+    clipContent: Boolean = true,
     content: @Composable BoxScope.() -> Unit,
 ) {
     val density = LocalDensity.current
@@ -122,7 +123,12 @@ fun PrismGlassBackdropSurface(
                     }
                 },
         )
-        Box(Modifier.matchParentSize().prismGlass(style), content = content)
+        if (clipContent) {
+            Box(Modifier.matchParentSize().prismGlass(style), content = content)
+        } else {
+            Box(Modifier.matchParentSize().prismGlass(style))
+            content()
+        }
     }
 }
 
