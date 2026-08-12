@@ -33,6 +33,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -95,6 +96,7 @@ fun <T> PrismGlassNavigationBar(
     val selectedIndex = items.resolvedSelectedIndex(selectedItem)
     val layoutDirection = LocalLayoutDirection.current
     val density = LocalDensity.current
+    val currentOnItemSelected by rememberUpdatedState(onItemSelected)
     var visualIndex by remember { mutableIntStateOf(selectedIndex) }
     var previousIndex by remember { mutableIntStateOf(selectedIndex) }
     var direction by remember { mutableIntStateOf(1) }
@@ -131,7 +133,15 @@ fun <T> PrismGlassNavigationBar(
     BoxWithConstraints(
         modifier.fillMaxWidth().height(style.height).prismGlass(style.surface)
             .onSizeChanged { containerWidthPx = it.width.toFloat() }
-            .pointerInput(items, enabled, dragEnabled, layoutDirection, containerWidthPx) {
+            .pointerInput(
+                items,
+                selectedIndex,
+                enabled,
+                dragEnabled,
+                reducedMotion,
+                layoutDirection,
+                containerWidthPx,
+            ) {
                 if (!enabled || !dragEnabled || containerWidthPx <= 0f) return@pointerInput
                 detectHorizontalDragGestures(
                     onDragStart = { offset ->
@@ -154,7 +164,7 @@ fun <T> PrismGlassNavigationBar(
                         visualIndex = targetIndex
                         dragging = false
                         dragStretch = 1f
-                        onItemSelected(items[targetIndex])
+                        currentOnItemSelected(items[targetIndex])
                     },
                 ) { change, dragAmount ->
                     val previousPosition = dragPositionPx
