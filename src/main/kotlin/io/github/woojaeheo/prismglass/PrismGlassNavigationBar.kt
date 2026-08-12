@@ -7,6 +7,7 @@ import androidx.annotation.RequiresApi
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -59,6 +60,7 @@ import androidx.compose.ui.unit.dp
 import kotlin.math.abs
 import kotlin.math.floor
 import kotlin.math.max
+import kotlin.math.sign
 
 /** 유리 네비게이션 스타일 */
 @Immutable
@@ -68,6 +70,8 @@ data class PrismGlassNavigationStyle(
     val height: Dp = 68.dp,
     val indicatorPadding: Dp = 4.dp,
     val stretch: Float = 1.20f,
+    val surfaceFill: Color = Color.Black.copy(alpha = .48f),
+    val indicatorFill: Color = Color.Black.copy(alpha = .88f),
 )
 
 /** 네비게이션 기본값 */
@@ -115,6 +119,7 @@ fun <T> PrismGlassNavigationBar(
     var releaseStretch by remember { mutableFloatStateOf(style.stretch) }
     var dragging by remember { mutableStateOf(false) }
     val stretch = remember { Animatable(1f) }
+    val navigationItemsBackdrop = rememberPrismGlassBackdropState()
     LaunchedEffect(selectedIndex) {
         if (!dragging) visualIndex = selectedIndex
     }
@@ -143,7 +148,9 @@ fun <T> PrismGlassNavigationBar(
     }
 
     BoxWithConstraints(
-        modifier.fillMaxWidth().height(style.height).prismGlass(style.surface)
+        modifier.fillMaxWidth().height(style.height)
+            .background(style.surfaceFill, style.surface.shape)
+            .prismGlass(style.surface)
             .onSizeChanged { containerWidthPx = it.width.toFloat() }
             .pointerInput(
                 items,
@@ -178,7 +185,7 @@ fun <T> PrismGlassNavigationBar(
                             rightToLeft = layoutDirection == LayoutDirection.Rtl,
                         )
                         visualIndex = targetIndex
-                        releaseStretch = dragStretch
+                        releaseStretch = max(dragStretch, 1.44f)
                         dragging = false
                         settlePulse++
                         previousDragTimeMillis = null
@@ -210,7 +217,6 @@ fun <T> PrismGlassNavigationBar(
             },
     ) {
         val itemWidth = maxWidth / items.size
-        val containerWidth = maxWidth
         val physicalIndex = visualIndex.toPhysicalIndex(items.size, layoutDirection)
         val indicatorDiameter = (style.height - style.indicatorPadding * 2).coerceAtMost(itemWidth - style.indicatorPadding * 2)
         val indicatorOffset by animateDpAsState(
@@ -228,11 +234,28 @@ fun <T> PrismGlassNavigationBar(
                 .toDp()
         }
         val activeOffset = if (dragging) draggedOffset else indicatorOffset
+        val activeIndex = if (dragging) {
+            resolvedIndexForPosition(
+                position = dragPositionPx,
+                width = containerWidthPx,
+                itemCount = items.size,
+                rightToLeft = layoutDirection == LayoutDirection.Rtl,
+            )
+        } else {
+            visualIndex
+        }
+        val dragExpansion by animateFloatAsState(
+            targetValue = if (dragging && !reducedMotion) 1f else 0f,
+            animationSpec = spring(dampingRatio = .62f, stiffness = Spring.StiffnessMedium),
+            label = "prism-glass-navigation-expansion",
+        )
         NavigationItemsRow(
             items = items,
-            visualIndex = visualIndex,
+            visualIndex = activeIndex,
             enabled = enabled,
             itemLabel = itemLabel,
+            backdropState = navigationItemsBackdrop,
+            renderSelection = indicatorContent != null,
             onItemSelected = { index, item ->
                 visualIndex = index
                 releaseStretch = style.stretch
@@ -240,28 +263,37 @@ fun <T> PrismGlassNavigationBar(
             },
             itemContent = itemContent,
         )
-        Box(
-            Modifier.offset(x = activeOffset)
+        PrismGlassBackdropSurface(
+            state = navigationItemsBackdrop,
+            modifier = Modifier.offset(x = activeOffset)
                 .width(indicatorDiameter).height(indicatorDiameter).align(Alignment.CenterStart)
                 .graphicsLayer {
-                    scaleX = if (dragging) dragStretch else stretch.value
-                    transformOrigin = TransformOrigin(if (direction > 0) 0f else 1f, .5f)
-                }.prismGlass(style.indicator),
-            contentAlignment = Alignment.Center,
+                    if (dragging) {
+                        scaleX = 1f + dragExpansion * .38f + (dragStretch - 1f) * .42f
+                        scaleY = 1f + dragExpansion * .44f + (dragStretch - 1f) * .24f
+                    } else {
+                        scaleX = stretch.value
+                        scaleY = 1f + (stretch.value - 1f) * .56f
+                    }
+                    transformOrigin = TransformOrigin(if (direction > 0) 1f else 0f, .5f)
+                },
+            style = style.indicator,
+            blurRadius = 2.dp,
+            refraction = .28f,
         ) {
+            Box(Modifier.fillMaxSize().background(style.indicatorFill, style.indicator.shape))
             if (indicatorContent == null) {
-                RefractedNavigationItems(
-                    items = items,
-                    visualIndex = visualIndex,
+                RefractedActiveItem(
+                    item = items[activeIndex],
                     itemWidth = itemWidth,
-                    containerWidth = containerWidth,
-                    indicatorOffset = activeOffset,
                     indicatorDiameter = indicatorDiameter,
                     velocity = if (dragging && !reducedMotion) dragVelocityPx else 0f,
+                    direction = direction,
+                    dragging = dragging && !reducedMotion,
                     itemContent = itemContent,
                 )
             } else {
-                indicatorContent(items[visualIndex])
+                indicatorContent(items[activeIndex])
             }
             Box(
                 Modifier.align(Alignment.TopCenter).padding(top = 2.dp).width(28.dp).height(2.dp)
@@ -282,10 +314,12 @@ private fun <T> NavigationItemsRow(
     visualIndex: Int,
     enabled: Boolean,
     itemLabel: (T) -> String,
+    backdropState: PrismGlassBackdropState,
+    renderSelection: Boolean,
     onItemSelected: (Int, T) -> Unit,
     itemContent: @Composable ColumnScope.(item: T, selected: Boolean) -> Unit,
 ) {
-    Row(Modifier.fillMaxSize().selectableGroup()) {
+    Row(Modifier.fillMaxSize().prismGlassBackdropSource(backdropState).selectableGroup()) {
         items.forEachIndexed { index, item ->
             val selected = index == visualIndex
             val interactionSource = remember(item) { MutableInteractionSource() }
@@ -303,61 +337,57 @@ private fun <T> NavigationItemsRow(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center,
             ) {
-                itemContent(item, selected)
+                itemContent(item, selected && renderSelection)
             }
         }
     }
 }
 
 @Composable
-private fun <T> RefractedNavigationItems(
-    items: List<T>,
-    visualIndex: Int,
+private fun <T> RefractedActiveItem(
+    item: T,
     itemWidth: Dp,
-    containerWidth: Dp,
-    indicatorOffset: Dp,
     indicatorDiameter: Dp,
     velocity: Float,
+    direction: Int,
+    dragging: Boolean,
     itemContent: @Composable ColumnScope.(item: T, selected: Boolean) -> Unit,
 ) {
     val density = LocalDensity.current
-    val centerX = with(density) { (indicatorOffset + indicatorDiameter / 2).toPx() }
-    val centerY = with(density) { (indicatorDiameter / 2).toPx() }
-    val radius = with(density) { (indicatorDiameter / 2).toPx() }
+    val diameterPx = with(density) { indicatorDiameter.toPx() }
     val normalizedVelocity = with(density) {
-        (velocity / (itemWidth.toPx() * 7.5f)).coerceIn(-1f, 1f)
+        (velocity / (itemWidth.toPx() * 2.8f)).coerceIn(-1f, 1f)
+    }
+    val effectiveVelocity = if (dragging) {
+        val signedDirection = if (normalizedVelocity == 0f) direction.toFloat() else normalizedVelocity.sign
+        signedDirection * max(abs(normalizedVelocity), .42f)
+    } else {
+        0f
     }
     val effect = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         rememberAgslLensEffect(
-            width = with(density) { containerWidth.toPx() },
-            height = with(density) { indicatorDiameter.toPx() },
-            centerX = centerX,
-            centerY = centerY,
-            radius = radius,
-            velocity = normalizedVelocity,
+            width = diameterPx,
+            height = diameterPx,
+            centerX = diameterPx / 2f,
+            centerY = diameterPx / 2f,
+            radius = diameterPx / 2f,
+            velocity = effectiveVelocity,
         )
     } else {
         null
     }
-    Row(
-        Modifier.width(containerWidth).fillMaxHeight().offset(x = -indicatorOffset)
-            .graphicsLayer {
-                renderEffect = effect
-                if (effect == null) {
-                    scaleX = 1.08f
-                    scaleY = 1.08f
-                }
-            },
-    ) {
-        items.forEachIndexed { index, item ->
-            Column(
-                modifier = Modifier.width(itemWidth).fillMaxHeight(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-            ) {
-                itemContent(item, index == visualIndex)
+    Column(
+        modifier = Modifier.fillMaxSize().graphicsLayer {
+            renderEffect = effect
+            if (effect == null && dragging) {
+                scaleX = 1.10f
+                scaleY = 1.10f
             }
-        }
+        },
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        itemContent(item, true)
     }
 }
 
@@ -399,7 +429,7 @@ internal fun resolvedIndexForPosition(
 
 internal fun stretchForVelocity(velocity: Float, itemWidth: Float): Float {
     if (!velocity.isFinite() || itemWidth <= 0f) return 1f
-    return 1f + (abs(velocity) / (itemWidth * 7.5f)).coerceIn(0f, .52f)
+    return 1f + (abs(velocity) / (itemWidth * 6.2f)).coerceIn(0f, .82f)
 }
 
 private fun Int.toPhysicalIndex(itemCount: Int, layoutDirection: LayoutDirection): Int =
@@ -418,11 +448,15 @@ private const val LENS_SHADER = """
         float stretch = 1.0 + speed * 0.45;
         float distanceFromCenter = length(float2(delta.x / stretch, delta.y));
         float influence = clamp(1.0 - distanceFromCenter / radius, 0.0, 1.0);
-        float magnification = 0.13 + speed * 0.09;
-        float2 samplePosition = center + delta * (1.0 - influence * influence * magnification);
-        samplePosition.x -= sign(velocity) * influence * influence * speed * radius * 0.12;
+        float magnification = speed * 0.42;
+        float2 samplePosition = center + float2(
+            delta.x * (1.0 - influence * influence * magnification),
+            delta.y * (1.0 - influence * magnification * 0.62)
+        );
+        samplePosition.x -= sign(velocity) * influence * influence * speed * radius * 0.20;
+        samplePosition.y += sin(delta.x / radius * 3.14159) * influence * speed * radius * 0.07;
         samplePosition = clamp(samplePosition, float2(0.0), size - float2(1.0));
-        float blurRadius = 1.25 + speed * 1.75;
+        float blurRadius = speed * 3.0;
         half4 sharp = content.eval(samplePosition);
         half4 blurred = (
             content.eval(samplePosition + float2(blurRadius, 0.0)) +
@@ -430,8 +464,8 @@ private const val LENS_SHADER = """
             content.eval(samplePosition + float2(0.0, blurRadius)) +
             content.eval(samplePosition - float2(0.0, blurRadius))
         ) * 0.25;
-        half4 refracted = mix(sharp, blurred, 0.22 + speed * 0.18);
-        half highlight = half(pow(influence, 4.0) * 0.09);
+        half4 refracted = mix(sharp, blurred, speed * 0.34);
+        half highlight = half(pow(influence, 4.0) * 0.06);
         return refracted + half4(highlight, highlight, highlight, 0.0);
     }
 """

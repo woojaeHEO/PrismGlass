@@ -31,8 +31,8 @@ class PrismGlassNavigationTest {
     @Test
     fun `드래그 속도에 따라 렌즈가 제한 범위 안에서 늘어난다`() {
         assertEquals(1f, stretchForVelocity(0f, 100f), .001f)
-        assertEquals(1.2f, stretchForVelocity(150f, 100f), .001f)
-        assertEquals(1.52f, stretchForVelocity(10_000f, 100f), .001f)
+        assertEquals(1.2419f, stretchForVelocity(150f, 100f), .001f)
+        assertEquals(1.82f, stretchForVelocity(10_000f, 100f), .001f)
     }
 
     @Test
