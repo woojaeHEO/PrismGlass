@@ -48,6 +48,16 @@ fun rememberPrismGlassBackdropState(): PrismGlassBackdropState {
 
 /** 임의의 컴포넌트를 유리 효과의 배경 소스로 등록 */
 fun Modifier.prismGlassBackdropSource(state: PrismGlassBackdropState): Modifier = this
+    .prismGlassBackdropSource(state, drawSource = true)
+
+/** 화면에는 숨기고 유리 효과에만 제공하는 배경 소스 */
+fun Modifier.prismGlassHiddenBackdropSource(state: PrismGlassBackdropState): Modifier = this
+    .prismGlassBackdropSource(state, drawSource = false)
+
+private fun Modifier.prismGlassBackdropSource(
+    state: PrismGlassBackdropState,
+    drawSource: Boolean,
+): Modifier = this
     .onGloballyPositioned { state.sourceCoordinates = it }
     .drawWithContent {
         if (size.width <= 0f || size.height <= 0f) {
@@ -57,7 +67,7 @@ fun Modifier.prismGlassBackdropSource(state: PrismGlassBackdropState): Modifier 
         state.layer.record(size = IntSize(size.width.toInt(), size.height.toInt())) {
             this@drawWithContent.drawContent()
         }
-        drawLayer(state.layer)
+        if (drawSource) drawLayer(state.layer)
     }
 
 /** 배경과 유리 컴포넌트의 캡처 순서를 안전하게 분리하는 호스트 */
@@ -82,6 +92,7 @@ fun PrismGlassBackdropSurface(
     style: PrismGlassStyle = PrismGlassDefaults.surfaceStyle(),
     blurRadius: Dp = 18.dp,
     refraction: Float = .16f,
+    velocity: Float = 0f,
     content: @Composable BoxScope.() -> Unit,
 ) {
     val density = LocalDensity.current
@@ -92,6 +103,7 @@ fun PrismGlassBackdropSurface(
         height = measuredSize.height.toFloat(),
         blurRadius = with(density) { blurRadius.toPx() },
         refraction = refraction.coerceIn(0f, .35f),
+        velocity = velocity.coerceIn(-1f, 1f),
     )
     Box(modifier) {
         Box(
@@ -120,11 +132,12 @@ private fun prismBackdropEffect(
     height: Float,
     blurRadius: Float,
     refraction: Float,
+    velocity: Float,
 ): androidx.compose.ui.graphics.RenderEffect? {
     if (width <= 0f || height <= 0f || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return null
     val safeBlurRadius = blurRadius.coerceAtLeast(0f)
     return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && refraction > 0f) {
-        rememberAgslBackdropEffect(width, height, safeBlurRadius, refraction)
+        rememberAgslBackdropEffect(width, height, safeBlurRadius, refraction, velocity)
     } else if (safeBlurRadius > 0f) {
         remember(safeBlurRadius) {
             AndroidRenderEffect.createBlurEffect(
@@ -145,10 +158,12 @@ private fun rememberAgslBackdropEffect(
     height: Float,
     blurRadius: Float,
     refraction: Float,
-): androidx.compose.ui.graphics.RenderEffect = remember(width, height, blurRadius, refraction) {
+    velocity: Float,
+): androidx.compose.ui.graphics.RenderEffect = remember(width, height, blurRadius, refraction, velocity) {
     val shader = RuntimeShader(BACKDROP_SHADER).apply {
         setFloatUniform("size", width, height)
         setFloatUniform("refraction", refraction)
+        setFloatUniform("velocity", velocity)
     }
     val lens = AndroidRenderEffect.createRuntimeShaderEffect(shader, "content")
     if (blurRadius > 0f) {
@@ -167,6 +182,7 @@ private const val BACKDROP_SHADER = """
     uniform shader content;
     uniform float2 size;
     uniform float refraction;
+    uniform float velocity;
 
     half4 main(float2 position) {
         float2 center = size * 0.5;
@@ -174,7 +190,10 @@ private const val BACKDROP_SHADER = """
         float2 normalized = (position - center) / halfSize;
         float edge = clamp(max(abs(normalized.x), abs(normalized.y)), 0.0, 1.0);
         float lens = smoothstep(0.18, 1.0, edge);
+        float speed = min(abs(velocity), 1.0);
         float2 samplePosition = center + (position - center) * (1.0 - refraction * lens * lens);
+        samplePosition.x -= sign(velocity) * speed * lens * lens * halfSize.x * 0.18;
+        samplePosition.y += sin(normalized.x * 3.14159) * speed * lens * halfSize.y * 0.08;
         samplePosition = clamp(samplePosition, float2(0.0), size - float2(1.0));
         half4 color = content.eval(samplePosition);
         half highlight = half(pow(edge, 7.0) * 0.08);

@@ -1,13 +1,7 @@
 package io.github.woojaeheo.prismglass
 
-import android.graphics.RenderEffect as AndroidRenderEffect
-import android.graphics.RuntimeShader
-import android.os.Build
-import androidx.annotation.RequiresApi
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -25,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
@@ -44,8 +39,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.TransformOrigin
-import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
@@ -59,8 +52,8 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import kotlin.math.abs
 import kotlin.math.floor
-import kotlin.math.max
-import kotlin.math.sign
+import kotlin.math.roundToInt
+import kotlinx.coroutines.launch
 
 /** 유리 네비게이션 스타일 */
 @Immutable
@@ -70,8 +63,8 @@ data class PrismGlassNavigationStyle(
     val height: Dp = 68.dp,
     val indicatorPadding: Dp = 4.dp,
     val stretch: Float = 1.20f,
-    val surfaceFill: Color = Color.Black.copy(alpha = .48f),
-    val indicatorFill: Color = Color.Black.copy(alpha = .88f),
+    val surfaceFill: Color = Color.Black.copy(alpha = .18f),
+    val indicatorFill: Color = Color.Black.copy(alpha = .26f),
 )
 
 /** 네비게이션 기본값 */
@@ -99,6 +92,7 @@ fun <T> PrismGlassNavigationBar(
     dragEnabled: Boolean = true,
     reducedMotion: Boolean = false,
     style: PrismGlassNavigationStyle = PrismGlassNavigationDefaults.style(),
+    backdropState: PrismGlassBackdropState? = null,
     indicatorContent: (@Composable BoxScope.(T) -> Unit)? = null,
     itemContent: @Composable ColumnScope.(item: T, selected: Boolean) -> Unit,
 ) {
@@ -107,44 +101,33 @@ fun <T> PrismGlassNavigationBar(
     val layoutDirection = LocalLayoutDirection.current
     val density = LocalDensity.current
     val currentOnItemSelected by rememberUpdatedState(onItemSelected)
+    val animationScope = androidx.compose.runtime.rememberCoroutineScope()
     var visualIndex by remember { mutableIntStateOf(selectedIndex) }
-    var previousIndex by remember { mutableIntStateOf(selectedIndex) }
-    var direction by remember { mutableIntStateOf(1) }
     var containerWidthPx by remember { mutableFloatStateOf(0f) }
-    var dragPositionPx by remember { mutableFloatStateOf(0f) }
-    var dragStretch by remember { mutableFloatStateOf(1f) }
-    var dragVelocityPx by remember { mutableFloatStateOf(0f) }
+    var dragTargetValue by remember { mutableFloatStateOf(selectedIndex.toFloat()) }
     var previousDragTimeMillis by remember { mutableStateOf<Long?>(null) }
-    var settlePulse by remember { mutableIntStateOf(0) }
-    var releaseStretch by remember { mutableFloatStateOf(style.stretch) }
     var dragging by remember { mutableStateOf(false) }
-    val stretch = remember { Animatable(1f) }
+    val positionAnimation = remember { Animatable(selectedIndex.toFloat(), .001f) }
+    val velocityAnimation = remember { Animatable(0f, .01f) }
+    val scaleXAnimation = remember { Animatable(1f, .001f) }
+    val scaleYAnimation = remember { Animatable(1f, .001f) }
     val navigationItemsBackdrop = rememberPrismGlassBackdropState()
     LaunchedEffect(selectedIndex) {
-        if (!dragging) visualIndex = selectedIndex
-    }
-    LaunchedEffect(visualIndex, settlePulse, reducedMotion, layoutDirection) {
         if (dragging) return@LaunchedEffect
+        visualIndex = selectedIndex
         if (reducedMotion) {
-            previousIndex = visualIndex
-            stretch.snapTo(1f)
+            positionAnimation.snapTo(selectedIndex.toFloat())
+            velocityAnimation.snapTo(0f)
+            scaleXAnimation.snapTo(1f)
+            scaleYAnimation.snapTo(1f)
             return@LaunchedEffect
         }
-        if (visualIndex != previousIndex || settlePulse > 0) {
-            val previousPhysicalIndex = previousIndex.toPhysicalIndex(items.size, layoutDirection)
-            val currentPhysicalIndex = visualIndex.toPhysicalIndex(items.size, layoutDirection)
-            direction = if (currentPhysicalIndex > previousPhysicalIndex) 1 else -1
-            previousIndex = visualIndex
-            stretch.snapTo(max(style.stretch, releaseStretch))
-            stretch.animateTo(
-                targetValue = 1f,
-                animationSpec = spring(
-                    dampingRatio = .58f,
-                    stiffness = Spring.StiffnessMediumLow,
-                ),
-            )
-            releaseStretch = style.stretch
-        }
+        launch { scaleXAnimation.animateTo(PRESSED_SCALE, PRESS_X_SPRING) }
+        launch { scaleYAnimation.animateTo(PRESSED_SCALE, PRESS_Y_SPRING) }
+        positionAnimation.animateTo(selectedIndex.toFloat(), POSITION_SPRING)
+        launch { velocityAnimation.animateTo(0f, VELOCITY_SPRING) }
+        launch { scaleXAnimation.animateTo(1f, PRESS_X_SPRING) }
+        launch { scaleYAnimation.animateTo(1f, PRESS_Y_SPRING) }
     }
 
     BoxWithConstraints(
@@ -163,92 +146,76 @@ fun <T> PrismGlassNavigationBar(
             ) {
                 if (!enabled || !dragEnabled || containerWidthPx <= 0f) return@pointerInput
                 detectHorizontalDragGestures(
-                    onDragStart = { offset ->
+                    onDragStart = {
                         dragging = true
-                        dragPositionPx = offset.x.coerceIn(0f, containerWidthPx)
-                        dragStretch = 1f
-                        dragVelocityPx = 0f
+                        dragTargetValue = positionAnimation.value
                         previousDragTimeMillis = null
+                        if (!reducedMotion) {
+                            animationScope.launch { scaleXAnimation.animateTo(PRESSED_SCALE, PRESS_X_SPRING) }
+                            animationScope.launch { scaleYAnimation.animateTo(PRESSED_SCALE, PRESS_Y_SPRING) }
+                        }
                     },
                     onDragCancel = {
                         dragging = false
-                        dragStretch = 1f
-                        dragVelocityPx = 0f
                         previousDragTimeMillis = null
                         visualIndex = selectedIndex
+                        animationScope.launch {
+                            positionAnimation.animateTo(selectedIndex.toFloat(), POSITION_SPRING)
+                        }
+                        animationScope.launch { velocityAnimation.animateTo(0f, VELOCITY_SPRING) }
+                        animationScope.launch { scaleXAnimation.animateTo(1f, PRESS_X_SPRING) }
+                        animationScope.launch { scaleYAnimation.animateTo(1f, PRESS_Y_SPRING) }
                     },
                     onDragEnd = {
-                        val targetIndex = resolvedIndexForPosition(
-                            position = dragPositionPx,
-                            width = containerWidthPx,
-                            itemCount = items.size,
-                            rightToLeft = layoutDirection == LayoutDirection.Rtl,
-                        )
+                        val targetIndex = dragTargetValue.roundToInt().coerceIn(items.indices)
                         visualIndex = targetIndex
-                        releaseStretch = max(dragStretch, 1.44f)
                         dragging = false
-                        settlePulse++
                         previousDragTimeMillis = null
+                        animationScope.launch {
+                            positionAnimation.animateTo(targetIndex.toFloat(), POSITION_SPRING)
+                            launch { scaleXAnimation.animateTo(1f, PRESS_X_SPRING) }
+                            launch { scaleYAnimation.animateTo(1f, PRESS_Y_SPRING) }
+                        }
+                        animationScope.launch { velocityAnimation.animateTo(0f, VELOCITY_SPRING) }
                         currentOnItemSelected(items[targetIndex])
                     },
                 ) { change, dragAmount ->
-                    val previousPosition = dragPositionPx
-                    dragPositionPx = (dragPositionPx + dragAmount).coerceIn(0f, containerWidthPx)
-                    visualIndex = resolvedIndexForPosition(
-                        position = dragPositionPx,
-                        width = containerWidthPx,
-                        itemCount = items.size,
-                        rightToLeft = layoutDirection == LayoutDirection.Rtl,
-                    )
-                    direction = if (dragPositionPx >= previousPosition) 1 else -1
                     val itemWidthPx = containerWidthPx / items.size
+                    val logicalDirection = if (layoutDirection == LayoutDirection.Ltr) 1f else -1f
+                    dragTargetValue = (dragTargetValue + dragAmount / itemWidthPx * logicalDirection)
+                        .coerceIn(0f, items.lastIndex.toFloat())
+                    visualIndex = dragTargetValue.roundToInt().coerceIn(items.indices)
                     val elapsedMillis = previousDragTimeMillis
                         ?.let { (change.uptimeMillis - it).coerceAtLeast(1L) }
                     val instantVelocity = elapsedMillis?.let { dragAmount / it * 1_000f } ?: 0f
-                    dragVelocityPx = dragVelocityPx * .58f + instantVelocity * .42f
                     previousDragTimeMillis = change.uptimeMillis
-                    dragStretch = if (reducedMotion) {
-                        1f
+                    if (reducedMotion) {
+                        animationScope.launch { positionAnimation.snapTo(dragTargetValue) }
                     } else {
-                        stretchForVelocity(dragVelocityPx, itemWidthPx)
+                        val range = items.lastIndex.coerceAtLeast(1).toFloat()
+                        val normalizedVelocity = instantVelocity / itemWidthPx / range * logicalDirection
+                        animationScope.launch {
+                            positionAnimation.animateTo(dragTargetValue, POSITION_SPRING)
+                        }
+                        animationScope.launch {
+                            velocityAnimation.animateTo(normalizedVelocity, VELOCITY_SPRING)
+                        }
                     }
                     change.consume()
                 }
             },
     ) {
         val itemWidth = maxWidth / items.size
-        val physicalIndex = visualIndex.toPhysicalIndex(items.size, layoutDirection)
+        val containerWidth = maxWidth
         val indicatorDiameter = (style.height - style.indicatorPadding * 2).coerceAtMost(itemWidth - style.indicatorPadding * 2)
-        val indicatorOffset by animateDpAsState(
-            targetValue = itemWidth * physicalIndex + (itemWidth - indicatorDiameter) / 2,
-            animationSpec = spring(
-                dampingRatio = if (reducedMotion) 1f else Spring.DampingRatioMediumBouncy,
-                stiffness = if (reducedMotion) Spring.StiffnessHigh else Spring.StiffnessMediumLow,
-            ),
-            label = "prism-glass-navigation-position",
-        )
-        val draggedOffset = with(density) {
-            val diameterPx = indicatorDiameter.toPx()
-            (dragPositionPx - diameterPx / 2f)
-                .coerceIn(0f, (containerWidthPx - diameterPx).coerceAtLeast(0f))
-                .toDp()
-        }
-        val activeOffset = if (dragging) draggedOffset else indicatorOffset
-        val activeIndex = if (dragging) {
-            resolvedIndexForPosition(
-                position = dragPositionPx,
-                width = containerWidthPx,
-                itemCount = items.size,
-                rightToLeft = layoutDirection == LayoutDirection.Rtl,
-            )
+        val logicalPosition = positionAnimation.value.coerceIn(0f, items.lastIndex.toFloat())
+        val physicalPosition = if (layoutDirection == LayoutDirection.Ltr) {
+            logicalPosition
         } else {
-            visualIndex
+            items.lastIndex - logicalPosition
         }
-        val dragExpansion by animateFloatAsState(
-            targetValue = if (dragging && !reducedMotion) 1f else 0f,
-            animationSpec = spring(dampingRatio = .62f, stiffness = Spring.StiffnessMedium),
-            label = "prism-glass-navigation-expansion",
-        )
+        val activeOffset = itemWidth * physicalPosition + (itemWidth - indicatorDiameter) / 2
+        val activeIndex = logicalPosition.roundToInt().coerceIn(items.indices)
         NavigationItemsRow(
             items = items,
             visualIndex = activeIndex,
@@ -258,52 +225,102 @@ fun <T> PrismGlassNavigationBar(
             renderSelection = indicatorContent != null,
             onItemSelected = { index, item ->
                 visualIndex = index
-                releaseStretch = style.stretch
                 currentOnItemSelected(item)
             },
             itemContent = itemContent,
         )
         PrismGlassBackdropSurface(
-            state = navigationItemsBackdrop,
+            state = backdropState ?: navigationItemsBackdrop,
             modifier = Modifier.offset(x = activeOffset)
                 .width(indicatorDiameter).height(indicatorDiameter).align(Alignment.CenterStart)
                 .graphicsLayer {
-                    if (dragging) {
-                        scaleX = 1f + dragExpansion * .38f + (dragStretch - 1f) * .42f
-                        scaleY = 1f + dragExpansion * .44f + (dragStretch - 1f) * .24f
-                    } else {
-                        scaleX = stretch.value
-                        scaleY = 1f + (stretch.value - 1f) * .56f
-                    }
-                    transformOrigin = TransformOrigin(if (direction > 0) 1f else 0f, .5f)
+                    val velocity = (velocityAnimation.value / 10f)
+                    scaleX = scaleXAnimation.value /
+                        (1f - (velocity * .75f).coerceIn(-.2f, .2f))
+                    scaleY = scaleYAnimation.value *
+                        (1f - (velocity * .25f).coerceIn(-.2f, .2f))
                 },
             style = style.indicator,
-            blurRadius = 2.dp,
-            refraction = .28f,
+            blurRadius = 7.dp,
+            refraction = .35f,
+            velocity = (velocityAnimation.value / 3f).coerceIn(-1f, 1f),
         ) {
             Box(Modifier.fillMaxSize().background(style.indicatorFill, style.indicator.shape))
+            LensLightingOverlay(style.indicator.shape)
             if (indicatorContent == null) {
-                RefractedActiveItem(
-                    item = items[activeIndex],
+                SelectedItemsOverlayRow(
+                    items = items,
                     itemWidth = itemWidth,
+                    containerWidth = containerWidth,
                     indicatorDiameter = indicatorDiameter,
-                    velocity = if (dragging && !reducedMotion) dragVelocityPx else 0f,
-                    direction = direction,
-                    dragging = dragging && !reducedMotion,
+                    indicatorOffset = activeOffset,
+                    modifier = Modifier.align(Alignment.CenterStart),
                     itemContent = itemContent,
                 )
             } else {
                 indicatorContent(items[activeIndex])
             }
             Box(
-                Modifier.align(Alignment.TopCenter).padding(top = 2.dp).width(28.dp).height(2.dp)
+                Modifier.align(Alignment.TopCenter).padding(top = 2.dp).width(30.dp).height(1.dp)
                     .background(
                         Brush.horizontalGradient(
-                            listOf(Color.Transparent, Color.White.copy(alpha = .86f), Color.Transparent),
+                            listOf(Color.Transparent, Color.White.copy(alpha = .72f), Color.Transparent),
                         ),
                         RoundedCornerShape(50),
                     ),
             )
+        }
+    }
+}
+
+/** 렌즈의 상단 반사와 하단 집광을 분리해 표현 */
+@Composable
+private fun BoxScope.LensLightingOverlay(shape: androidx.compose.ui.graphics.Shape) {
+    Box(
+        Modifier.matchParentSize().background(
+            Brush.verticalGradient(
+                0f to Color.White.copy(alpha = .18f),
+                .28f to Color.Transparent,
+                .68f to Color.Transparent,
+                1f to Color.Black.copy(alpha = .24f),
+            ),
+            shape,
+        ),
+    )
+    Box(
+        Modifier.align(Alignment.BottomCenter).padding(bottom = 2.dp).width(28.dp).height(1.dp)
+            .background(
+                Brush.horizontalGradient(
+                    listOf(Color.Transparent, Color.White.copy(alpha = .26f), Color.Transparent),
+                ),
+                RoundedCornerShape(50),
+            ),
+    )
+}
+
+@Composable
+private fun <T> SelectedItemsOverlayRow(
+    items: List<T>,
+    itemWidth: Dp,
+    containerWidth: Dp,
+    indicatorDiameter: Dp,
+    indicatorOffset: Dp,
+    modifier: Modifier,
+    itemContent: @Composable ColumnScope.(item: T, selected: Boolean) -> Unit,
+) {
+    Row(
+        modifier.requiredWidth(containerWidth).fillMaxHeight().offset(
+            x = -indicatorOffset + (containerWidth - indicatorDiameter) / 2,
+        ),
+    ) {
+        items.forEach { item ->
+            Column(
+                modifier = Modifier.width(itemWidth).fillMaxHeight(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                itemContent(item, true)
+            }
         }
     }
 }
@@ -343,74 +360,6 @@ private fun <T> NavigationItemsRow(
     }
 }
 
-@Composable
-private fun <T> RefractedActiveItem(
-    item: T,
-    itemWidth: Dp,
-    indicatorDiameter: Dp,
-    velocity: Float,
-    direction: Int,
-    dragging: Boolean,
-    itemContent: @Composable ColumnScope.(item: T, selected: Boolean) -> Unit,
-) {
-    val density = LocalDensity.current
-    val diameterPx = with(density) { indicatorDiameter.toPx() }
-    val normalizedVelocity = with(density) {
-        (velocity / (itemWidth.toPx() * 2.8f)).coerceIn(-1f, 1f)
-    }
-    val effectiveVelocity = if (dragging) {
-        val signedDirection = if (normalizedVelocity == 0f) direction.toFloat() else normalizedVelocity.sign
-        signedDirection * max(abs(normalizedVelocity), .42f)
-    } else {
-        0f
-    }
-    val effect = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        rememberAgslLensEffect(
-            width = diameterPx,
-            height = diameterPx,
-            centerX = diameterPx / 2f,
-            centerY = diameterPx / 2f,
-            radius = diameterPx / 2f,
-            velocity = effectiveVelocity,
-        )
-    } else {
-        null
-    }
-    Column(
-        modifier = Modifier.fillMaxSize().graphicsLayer {
-            renderEffect = effect
-            if (effect == null && dragging) {
-                scaleX = 1.10f
-                scaleY = 1.10f
-            }
-        },
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
-    ) {
-        itemContent(item, true)
-    }
-}
-
-@Composable
-@RequiresApi(Build.VERSION_CODES.TIRAMISU)
-private fun rememberAgslLensEffect(
-    width: Float,
-    height: Float,
-    centerX: Float,
-    centerY: Float,
-    radius: Float,
-    velocity: Float,
-): androidx.compose.ui.graphics.RenderEffect? {
-    val shader = remember { RuntimeShader(LENS_SHADER) }
-    shader.setFloatUniform("size", width, height)
-    shader.setFloatUniform("center", centerX, centerY)
-    shader.setFloatUniform("radius", radius)
-    shader.setFloatUniform("velocity", velocity)
-    return remember(shader) {
-        AndroidRenderEffect.createRuntimeShaderEffect(shader, "content").asComposeRenderEffect()
-    }
-}
-
 internal fun <T> List<T>.resolvedSelectedIndex(selectedItem: T): Int =
     indexOf(selectedItem).coerceAtLeast(0)
 
@@ -432,40 +381,8 @@ internal fun stretchForVelocity(velocity: Float, itemWidth: Float): Float {
     return 1f + (abs(velocity) / (itemWidth * 6.2f)).coerceIn(0f, .82f)
 }
 
-private fun Int.toPhysicalIndex(itemCount: Int, layoutDirection: LayoutDirection): Int =
-    if (layoutDirection == LayoutDirection.Rtl) itemCount - this - 1 else this
-
-private const val LENS_SHADER = """
-    uniform shader content;
-    uniform float2 size;
-    uniform float2 center;
-    uniform float radius;
-    uniform float velocity;
-
-    half4 main(float2 position) {
-        float speed = min(abs(velocity), 1.0);
-        float2 delta = position - center;
-        float stretch = 1.0 + speed * 0.45;
-        float distanceFromCenter = length(float2(delta.x / stretch, delta.y));
-        float influence = clamp(1.0 - distanceFromCenter / radius, 0.0, 1.0);
-        float magnification = speed * 0.42;
-        float2 samplePosition = center + float2(
-            delta.x * (1.0 - influence * influence * magnification),
-            delta.y * (1.0 - influence * magnification * 0.62)
-        );
-        samplePosition.x -= sign(velocity) * influence * influence * speed * radius * 0.20;
-        samplePosition.y += sin(delta.x / radius * 3.14159) * influence * speed * radius * 0.07;
-        samplePosition = clamp(samplePosition, float2(0.0), size - float2(1.0));
-        float blurRadius = speed * 3.0;
-        half4 sharp = content.eval(samplePosition);
-        half4 blurred = (
-            content.eval(samplePosition + float2(blurRadius, 0.0)) +
-            content.eval(samplePosition - float2(blurRadius, 0.0)) +
-            content.eval(samplePosition + float2(0.0, blurRadius)) +
-            content.eval(samplePosition - float2(0.0, blurRadius))
-        ) * 0.25;
-        half4 refracted = mix(sharp, blurred, speed * 0.34);
-        half highlight = half(pow(influence, 4.0) * 0.06);
-        return refracted + half4(highlight, highlight, highlight, 0.0);
-    }
-"""
+private const val PRESSED_SCALE = 78f / 56f
+private val POSITION_SPRING = spring<Float>(dampingRatio = 1f, stiffness = 1_000f, visibilityThreshold = .001f)
+private val VELOCITY_SPRING = spring<Float>(dampingRatio = .5f, stiffness = 300f, visibilityThreshold = .01f)
+private val PRESS_X_SPRING = spring<Float>(dampingRatio = .6f, stiffness = 250f, visibilityThreshold = .001f)
+private val PRESS_Y_SPRING = spring<Float>(dampingRatio = .7f, stiffness = 250f, visibilityThreshold = .001f)
