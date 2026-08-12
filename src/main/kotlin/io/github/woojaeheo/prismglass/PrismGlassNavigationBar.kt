@@ -5,6 +5,7 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -28,7 +29,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -37,11 +40,18 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import kotlin.math.abs
+import kotlin.math.floor
 
 /** 유리 네비게이션 스타일 */
 @Immutable
@@ -75,6 +85,7 @@ fun <T> PrismGlassNavigationBar(
     itemLabel: (T) -> String,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    dragEnabled: Boolean = true,
     reducedMotion: Boolean = false,
     style: PrismGlassNavigationStyle = PrismGlassNavigationDefaults.style(),
     indicatorContent: (@Composable BoxScope.(T) -> Unit)? = null,
@@ -82,19 +93,30 @@ fun <T> PrismGlassNavigationBar(
 ) {
     if (items.isEmpty()) return
     val selectedIndex = items.resolvedSelectedIndex(selectedItem)
-    val effectiveSelectedItem = items[selectedIndex]
+    val layoutDirection = LocalLayoutDirection.current
+    val density = LocalDensity.current
+    var visualIndex by remember { mutableIntStateOf(selectedIndex) }
     var previousIndex by remember { mutableIntStateOf(selectedIndex) }
     var direction by remember { mutableIntStateOf(1) }
+    var containerWidthPx by remember { mutableFloatStateOf(0f) }
+    var dragPositionPx by remember { mutableFloatStateOf(0f) }
+    var dragStretch by remember { mutableFloatStateOf(1f) }
+    var dragging by remember { mutableStateOf(false) }
     val stretch = remember { Animatable(1f) }
-    LaunchedEffect(selectedIndex, reducedMotion) {
+    LaunchedEffect(selectedIndex) {
+        if (!dragging) visualIndex = selectedIndex
+    }
+    LaunchedEffect(visualIndex, reducedMotion, layoutDirection) {
         if (reducedMotion) {
-            previousIndex = selectedIndex
+            previousIndex = visualIndex
             stretch.snapTo(1f)
             return@LaunchedEffect
         }
-        if (selectedIndex != previousIndex) {
-            direction = if (selectedIndex > previousIndex) 1 else -1
-            previousIndex = selectedIndex
+        if (visualIndex != previousIndex) {
+            val previousPhysicalIndex = previousIndex.toPhysicalIndex(items.size, layoutDirection)
+            val currentPhysicalIndex = visualIndex.toPhysicalIndex(items.size, layoutDirection)
+            direction = if (currentPhysicalIndex > previousPhysicalIndex) 1 else -1
+            previousIndex = visualIndex
             stretch.snapTo(style.stretch)
             stretch.animateTo(
                 targetValue = 1f,
@@ -106,20 +128,75 @@ fun <T> PrismGlassNavigationBar(
         }
     }
 
-    BoxWithConstraints(modifier.fillMaxWidth().height(style.height).prismGlass(style.surface)) {
+    BoxWithConstraints(
+        modifier.fillMaxWidth().height(style.height).prismGlass(style.surface)
+            .onSizeChanged { containerWidthPx = it.width.toFloat() }
+            .pointerInput(items, enabled, dragEnabled, layoutDirection, containerWidthPx) {
+                if (!enabled || !dragEnabled || containerWidthPx <= 0f) return@pointerInput
+                detectHorizontalDragGestures(
+                    onDragStart = { offset ->
+                        dragging = true
+                        dragPositionPx = offset.x.coerceIn(0f, containerWidthPx)
+                        dragStretch = if (reducedMotion) 1f else 1.08f
+                    },
+                    onDragCancel = {
+                        dragging = false
+                        dragStretch = 1f
+                        visualIndex = selectedIndex
+                    },
+                    onDragEnd = {
+                        val targetIndex = resolvedIndexForPosition(
+                            position = dragPositionPx,
+                            width = containerWidthPx,
+                            itemCount = items.size,
+                            rightToLeft = layoutDirection == LayoutDirection.Rtl,
+                        )
+                        visualIndex = targetIndex
+                        dragging = false
+                        dragStretch = 1f
+                        onItemSelected(items[targetIndex])
+                    },
+                ) { change, dragAmount ->
+                    val previousPosition = dragPositionPx
+                    dragPositionPx = (dragPositionPx + dragAmount).coerceIn(0f, containerWidthPx)
+                    visualIndex = resolvedIndexForPosition(
+                        position = dragPositionPx,
+                        width = containerWidthPx,
+                        itemCount = items.size,
+                        rightToLeft = layoutDirection == LayoutDirection.Rtl,
+                    )
+                    direction = if (dragPositionPx >= previousPosition) 1 else -1
+                    val itemWidthPx = containerWidthPx / items.size
+                    dragStretch = if (reducedMotion) {
+                        1f
+                    } else {
+                        1f + (abs(dragAmount) / itemWidthPx * 1.8f).coerceIn(.06f, .18f)
+                    }
+                    change.consume()
+                }
+            },
+    ) {
         val itemWidth = maxWidth / items.size
+        val physicalIndex = visualIndex.toPhysicalIndex(items.size, layoutDirection)
         val indicatorOffset by animateDpAsState(
-            targetValue = itemWidth * selectedIndex,
+            targetValue = itemWidth * physicalIndex,
             animationSpec = spring(
                 dampingRatio = if (reducedMotion) 1f else Spring.DampingRatioMediumBouncy,
                 stiffness = if (reducedMotion) Spring.StiffnessHigh else Spring.StiffnessMediumLow,
             ),
             label = "prism-glass-navigation-position",
         )
+        val draggedOffset = with(density) {
+            val itemWidthPx = containerWidthPx / items.size
+            (dragPositionPx - itemWidthPx / 2f)
+                .coerceIn(0f, (containerWidthPx - itemWidthPx).coerceAtLeast(0f))
+                .toDp()
+        }
         Box(
-            Modifier.offset(x = indicatorOffset).width(itemWidth).fillMaxHeight().padding(style.indicatorPadding)
+            Modifier.offset(x = if (dragging) draggedOffset else indicatorOffset)
+                .width(itemWidth).fillMaxHeight().padding(style.indicatorPadding)
                 .graphicsLayer {
-                    scaleX = stretch.value
+                    scaleX = if (dragging) dragStretch else stretch.value
                     transformOrigin = TransformOrigin(if (direction > 0) 0f else 1f, .5f)
                 }.prismGlass(style.indicator),
         ) {
@@ -134,12 +211,12 @@ fun <T> PrismGlassNavigationBar(
                         ),
                 )
             } else {
-                indicatorContent(items[selectedIndex])
+                indicatorContent(items[visualIndex])
             }
         }
         Row(Modifier.fillMaxSize().selectableGroup()) {
-            items.forEach { item ->
-                val selected = item == effectiveSelectedItem
+            items.forEachIndexed { index, item ->
+                val selected = index == visualIndex
                 val interactionSource = remember(item) { MutableInteractionSource() }
                 Column(
                     modifier = Modifier.weight(1f).fillMaxHeight().semantics(mergeDescendants = true) {
@@ -147,7 +224,10 @@ fun <T> PrismGlassNavigationBar(
                     }.selectable(
                         selected = selected,
                         enabled = enabled,
-                        onClick = { onItemSelected(item) },
+                        onClick = {
+                            visualIndex = index
+                            onItemSelected(item)
+                        },
                         role = Role.Tab,
                         interactionSource = interactionSource,
                         indication = null,
@@ -164,3 +244,19 @@ fun <T> PrismGlassNavigationBar(
 
 internal fun <T> List<T>.resolvedSelectedIndex(selectedItem: T): Int =
     indexOf(selectedItem).coerceAtLeast(0)
+
+internal fun resolvedIndexForPosition(
+    position: Float,
+    width: Float,
+    itemCount: Int,
+    rightToLeft: Boolean,
+): Int {
+    if (width <= 0f || itemCount <= 1) return 0
+    val physicalIndex = floor(position.coerceIn(0f, width) / (width / itemCount))
+        .toInt()
+        .coerceIn(0, itemCount - 1)
+    return if (rightToLeft) itemCount - physicalIndex - 1 else physicalIndex
+}
+
+private fun Int.toPhysicalIndex(itemCount: Int, layoutDirection: LayoutDirection): Int =
+    if (layoutDirection == LayoutDirection.Rtl) itemCount - this - 1 else this

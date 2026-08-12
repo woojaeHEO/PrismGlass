@@ -19,7 +19,7 @@ dependencyResolutionManagement {
 Add the dependency.
 
 ```kotlin
-implementation("com.github.woojaeHEO:PrismGlass:1.0.0")
+implementation("com.github.woojaeHEO:PrismGlass:1.1.0")
 ```
 
 ## Surface
@@ -46,7 +46,7 @@ PrismGlassNavigationBar(
 }
 ```
 
-The navigation component supports arbitrary item content, a custom indicator slot, reduced motion, accessibility tab semantics, and any item model with stable equality.
+The navigation component supports finger tracking, release selection, arbitrary item content, a custom indicator slot, reduced motion, RTL layouts, accessibility tab semantics, and any item model with stable equality.
 
 ## Requirements
 
