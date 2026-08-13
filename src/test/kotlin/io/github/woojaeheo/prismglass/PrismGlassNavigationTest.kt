@@ -40,4 +40,15 @@ class PrismGlassNavigationTest {
         assertEquals(1f, stretchForVelocity(Float.NaN, 100f), .001f)
         assertEquals(1f, stretchForVelocity(100f, 0f), .001f)
     }
+
+    @Test
+    fun `가장 가까운 선택 정책은 범위를 벗어나지 않는다`() {
+        val policy = PrismGlassSelectionPolicy.Nearest
+
+        assertEquals(0, policy.targetIndex(Float.NaN, 4))
+        assertEquals(0, policy.targetIndex(-10f, 4))
+        assertEquals(2, policy.targetIndex(1.6f, 4))
+        assertEquals(3, policy.targetIndex(20f, 4))
+        assertEquals(0, policy.targetIndex(2f, 0))
+    }
 }

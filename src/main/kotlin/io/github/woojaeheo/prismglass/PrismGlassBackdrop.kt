@@ -8,13 +8,16 @@ import androidx.annotation.RequiresApi
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.composed
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.asComposeRenderEffect
@@ -57,9 +60,17 @@ fun Modifier.prismGlassHiddenBackdropSource(state: PrismGlassBackdropState): Mod
 private fun Modifier.prismGlassBackdropSource(
     state: PrismGlassBackdropState,
     drawSource: Boolean,
-): Modifier = this
-    .onGloballyPositioned { state.sourceCoordinates = it }
-    .drawWithContent {
+): Modifier = composed {
+    var ownedCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    DisposableEffect(state) {
+        onDispose {
+            if (state.sourceCoordinates === ownedCoordinates) state.sourceCoordinates = null
+        }
+    }
+    this.onGloballyPositioned {
+        ownedCoordinates = it
+        state.sourceCoordinates = it
+    }.drawWithContent {
         if (size.width <= 0f || size.height <= 0f) {
             drawContent()
             return@drawWithContent
@@ -69,6 +80,7 @@ private fun Modifier.prismGlassBackdropSource(
         }
         if (drawSource) drawLayer(state.layer)
     }
+}
 
 /** 배경과 유리 컴포넌트의 캡처 순서를 안전하게 분리하는 호스트 */
 @Composable
@@ -78,6 +90,9 @@ fun PrismGlassBackdropHost(
     background: @Composable BoxScope.() -> Unit,
     content: @Composable BoxScope.(PrismGlassBackdropState) -> Unit,
 ) {
+    DisposableEffect(state) {
+        onDispose { state.sourceCoordinates = null }
+    }
     Box(modifier) {
         Box(Modifier.matchParentSize().prismGlassBackdropSource(state), content = background)
         content(state)
@@ -94,17 +109,19 @@ fun PrismGlassBackdropSurface(
     refraction: Float = .16f,
     velocity: Float = 0f,
     clipContent: Boolean = true,
+    optics: PrismGlassOptics? = null,
     content: @Composable BoxScope.() -> Unit,
 ) {
     val density = LocalDensity.current
+    val resolvedOptics = (optics ?: PrismGlassOptics(blurRadius, refraction)).resolve()
     var coordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
     var measuredSize by remember { mutableStateOf(IntSize.Zero) }
     val effect = prismBackdropEffect(
         width = measuredSize.width.toFloat(),
         height = measuredSize.height.toFloat(),
-        blurRadius = with(density) { blurRadius.toPx() },
-        refraction = refraction.coerceIn(0f, .35f),
-        velocity = velocity.coerceIn(-1f, 1f),
+        blurRadius = with(density) { resolvedOptics.blurRadius.toPx() },
+        refraction = resolvedOptics.refraction,
+        velocity = velocity.takeIf(Float::isFinite)?.coerceIn(-1f, 1f) ?: 0f,
     )
     Box(modifier) {
         Box(
@@ -172,7 +189,7 @@ private fun rememberAgslBackdropEffect(
             setFloatUniform("refraction", refraction)
         }
     }
-    shader.setFloatUniform("velocity", velocity)
+    SideEffect { shader.setFloatUniform("velocity", velocity) }
     return remember(shader, blurRadius) {
         val lens = AndroidRenderEffect.createRuntimeShaderEffect(shader, "content")
         if (blurRadius > 0f) {

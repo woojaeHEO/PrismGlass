@@ -1,7 +1,6 @@
 package io.github.woojaeheo.prismglass
 
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -36,6 +35,7 @@ data class PrismGlassStyle(
     val secondaryEdge: Color,
     val shadowElevation: Dp,
     val borderWidth: Dp,
+    val decoration: PrismGlassDecoration = PrismGlassDecoration(),
 )
 
 /** 유리 기본값 */
@@ -57,42 +57,45 @@ object PrismGlassDefaults {
 }
 
 /** 임의의 컴포넌트에 유리 표면 적용 */
-fun Modifier.prismGlass(style: PrismGlassStyle): Modifier = this
+fun Modifier.prismGlass(style: PrismGlassStyle): Modifier {
+    val decoration = style.decoration.normalized()
+    return this
     .shadow(
-        elevation = style.shadowElevation,
+        elevation = style.shadowElevation.coerceAtLeast(0.dp),
         shape = style.shape,
-        ambientColor = style.primaryEdge.copy(alpha = .18f),
-        spotColor = Color.Black.copy(alpha = .28f),
+        ambientColor = style.primaryEdge.copy(alpha = decoration.ambientShadowAlpha),
+        spotColor = decoration.spotShadowColor.copy(alpha = decoration.spotShadowAlpha),
     )
     .clip(style.shape)
     .background(
         Brush.linearGradient(
             listOf(
-                style.highlight.copy(alpha = .24f),
-                style.tint.copy(alpha = .16f),
-                style.tint.copy(alpha = .07f),
+                style.highlight.copy(alpha = decoration.topHighlightAlpha),
+                style.tint.copy(alpha = decoration.tintStartAlpha),
+                style.tint.copy(alpha = decoration.tintEndAlpha),
             ),
         ),
     )
     .background(
         Brush.radialGradient(
-            listOf(style.highlight.copy(alpha = .17f), Color.Transparent),
+            listOf(style.highlight.copy(alpha = decoration.centerGlowAlpha), Color.Transparent),
             radius = 720f,
         ),
     )
     .border(
-        width = style.borderWidth,
+        width = style.borderWidth.coerceAtLeast(0.dp),
         brush = Brush.sweepGradient(
             listOf(
-                style.highlight.copy(alpha = .72f),
-                style.primaryEdge.copy(alpha = .62f),
+                style.highlight.copy(alpha = decoration.highlightEdgeAlpha),
+                style.primaryEdge.copy(alpha = decoration.primaryEdgeAlpha),
                 Color.Transparent,
-                style.secondaryEdge.copy(alpha = .54f),
-                style.highlight.copy(alpha = .72f),
+                style.secondaryEdge.copy(alpha = decoration.secondaryEdgeAlpha),
+                style.highlight.copy(alpha = decoration.highlightEdgeAlpha),
             ),
         ),
         shape = style.shape,
     )
+}
 
 /** 슬롯 기반 유리 표면 */
 @Composable
@@ -113,13 +116,14 @@ fun PrismGlassInteractiveSurface(
     reducedMotion: Boolean = false,
     role: Role? = null,
     style: PrismGlassStyle = PrismGlassDefaults.surfaceStyle(),
+    pressSpec: PrismGlassPressSpec = PrismGlassPressSpec(),
     content: @Composable BoxScope.() -> Unit,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val pressed by interactionSource.collectIsPressedAsState()
     val scale by animateFloatAsState(
-        targetValue = if (pressed && enabled && !reducedMotion) .965f else 1f,
-        animationSpec = spring(),
+        targetValue = if (pressed && enabled && !reducedMotion) pressSpec.safePressedScale else 1f,
+        animationSpec = pressSpec.spring,
         label = "prism-glass-press",
     )
     Box(

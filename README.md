@@ -19,7 +19,7 @@ dependencyResolutionManagement {
 Add the dependency.
 
 ```kotlin
-implementation("com.github.woojaeHEO:PrismGlass:1.2.4")
+implementation("com.github.woojaeHEO:PrismGlass:1.3.0")
 ```
 
 ## Surface
@@ -31,6 +31,17 @@ PrismGlassInteractiveSurface(onClick = onClick) {
 ```
 
 The `Modifier.prismGlass` extension can decorate any Compose component.
+
+Customize press motion without replacing the component.
+
+```kotlin
+PrismGlassInteractiveSurface(
+    onClick = onClick,
+    pressSpec = PrismGlassPressSpec(pressedScale = .94f),
+) {
+    content()
+}
+```
 
 ## Backdrop
 
@@ -59,6 +70,21 @@ PrismGlassBackdropHost(
 
 Use `Modifier.prismGlassBackdropSource` when the source and overlay are already separate siblings. Android 13 and newer uses an AGSL refraction shader chained with GPU blur. Android 12 uses GPU blur. Android 8 through 11 keeps the translucent surface without a runtime effect.
 
+`PrismGlassOptics` separates visual policy from rendering. Use `Automatic` for platform-aware behavior, `Translucent` for the lowest GPU cost, `Blur` to disable refraction, or `Refractive` to request the full effect with a safe fallback.
+
+```kotlin
+PrismGlassBackdropSurface(
+    state = backdrop,
+    optics = PrismGlassOptics(
+        blurRadius = 14.dp,
+        refraction = .24f,
+        quality = PrismGlassQuality.Automatic,
+    ),
+) {
+    content()
+}
+```
+
 ## Navigation
 
 ```kotlin
@@ -74,6 +100,38 @@ PrismGlassNavigationBar(
 ```
 
 The navigation component supports AGSL lens refraction on Android 13 and newer, velocity-driven elastic stretching, finger tracking, release selection, arbitrary item content, a custom indicator slot, reduced motion, RTL layouts, accessibility tab semantics, and any item model with stable equality.
+
+## Architecture and customization
+
+PrismGlass keeps policy objects independent from Compose rendering.
+
+- `PrismGlassStyle` owns colors, shape, edge, border, and shadow tokens.
+- `PrismGlassOptics` owns blur, refraction, and platform quality policy.
+- `PrismGlassMotionSpec` and `PrismGlassPressSpec` own spring and scale behavior.
+- `PrismGlassSelectionPolicy` decides how a drag position settles.
+- `PrismGlassNavigationState` exposes current index, continuous position, velocity, and drag state.
+- Surface, backdrop, and navigation composables adapt those policies to Compose.
+
+All configuration types have safe defaults. Invalid dimensions and non-finite motion or optical values are clamped before rendering.
+
+```kotlin
+val glassState = rememberPrismGlassNavigationState()
+
+PrismGlassNavigationBar(
+    items = destinations,
+    selectedItem = selected,
+    onItemSelected = onSelect,
+    itemLabel = { it.label },
+    state = glassState,
+    motionSpec = PrismGlassMotionSpec(pressedScale = 1.32f),
+    selectionPolicy = PrismGlassSelectionPolicy { position, count ->
+        position.toInt().coerceIn(0, count - 1)
+    },
+    indicatorOptics = PrismGlassOptics(10.dp, .28f),
+) { item, isSelected ->
+    NavigationItem(item, isSelected)
+}
+```
 
 ## Requirements
 
