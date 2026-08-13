@@ -165,22 +165,26 @@ private fun rememberAgslBackdropEffect(
     blurRadius: Float,
     refraction: Float,
     velocity: Float,
-): androidx.compose.ui.graphics.RenderEffect = remember(width, height, blurRadius, refraction, velocity) {
-    val shader = RuntimeShader(BACKDROP_SHADER).apply {
-        setFloatUniform("size", width, height)
-        setFloatUniform("refraction", refraction)
-        setFloatUniform("velocity", velocity)
+): androidx.compose.ui.graphics.RenderEffect {
+    val shader = remember(width, height, refraction) {
+        RuntimeShader(BACKDROP_SHADER).apply {
+            setFloatUniform("size", width, height)
+            setFloatUniform("refraction", refraction)
+        }
     }
-    val lens = AndroidRenderEffect.createRuntimeShaderEffect(shader, "content")
-    if (blurRadius > 0f) {
-        val blur = AndroidRenderEffect.createBlurEffect(
-            blurRadius,
-            blurRadius,
-            Shader.TileMode.CLAMP,
-        )
-        AndroidRenderEffect.createChainEffect(lens, blur).asComposeRenderEffect()
-    } else {
-        lens.asComposeRenderEffect()
+    shader.setFloatUniform("velocity", velocity)
+    return remember(shader, blurRadius) {
+        val lens = AndroidRenderEffect.createRuntimeShaderEffect(shader, "content")
+        if (blurRadius > 0f) {
+            val blur = AndroidRenderEffect.createBlurEffect(
+                blurRadius,
+                blurRadius,
+                Shader.TileMode.CLAMP,
+            )
+            AndroidRenderEffect.createChainEffect(lens, blur).asComposeRenderEffect()
+        } else {
+            lens.asComposeRenderEffect()
+        }
     }
 }
 
