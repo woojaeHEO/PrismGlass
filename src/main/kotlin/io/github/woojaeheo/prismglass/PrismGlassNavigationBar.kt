@@ -24,13 +24,12 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -51,6 +50,8 @@ import androidx.compose.ui.unit.dp
 import kotlin.math.abs
 import kotlin.math.floor
 import kotlin.math.roundToInt
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 
 /** 유리 네비게이션 스타일 */
@@ -106,19 +107,23 @@ fun <T> PrismGlassNavigationBar(
     val safeHeight = style.height.coerceAtLeast(0.dp)
     val safeIndicatorPadding = style.indicatorPadding.coerceAtLeast(0.dp)
     val animationScope = androidx.compose.runtime.rememberCoroutineScope()
-    var visualIndex by remember { mutableIntStateOf(selectedIndex) }
     var containerWidthPx by remember { mutableFloatStateOf(0f) }
-    var dragTargetValue by remember { mutableFloatStateOf(selectedIndex.toFloat()) }
-    var previousDragTimeMillis by remember { mutableStateOf<Long?>(null) }
-    var dragging by remember { mutableStateOf(false) }
+    val dragRuntime = remember(state) { NavigationDragRuntime(selectedIndex.toFloat()) }
     val positionAnimation = remember { Animatable(selectedIndex.toFloat(), .001f) }
     val velocityAnimation = remember { Animatable(0f, .01f) }
     val scaleXAnimation = remember { Animatable(1f, .001f) }
     val scaleYAnimation = remember { Animatable(1f, .001f) }
     val navigationItemsBackdrop = rememberPrismGlassBackdropState()
+    DisposableEffect(state) {
+        onDispose {
+            dragRuntime.motionJob?.cancel()
+            dragRuntime.frames.close()
+            state.isDragging = false
+            state.velocity = 0f
+        }
+    }
     LaunchedEffect(selectedIndex, state, motionSpec, reducedMotion) {
-        if (dragging) return@LaunchedEffect
-        visualIndex = selectedIndex
+        if (dragRuntime.dragging) return@LaunchedEffect
         state.currentIndex = selectedIndex
         if (reducedMotion) {
             positionAnimation.snapTo(selectedIndex.toFloat())
@@ -156,20 +161,28 @@ fun <T> PrismGlassNavigationBar(
                 if (!enabled || !dragEnabled || containerWidthPx <= 0f) return@pointerInput
                 detectHorizontalDragGestures(
                     onDragStart = {
-                        dragging = true
+                        dragRuntime.motionJob?.cancel()
+                        dragRuntime.clearFrames()
+                        dragRuntime.motionJob = animationScope.launch {
+                            for (frame in dragRuntime.frames) {
+                                positionAnimation.snapTo(frame.position)
+                                velocityAnimation.snapTo(frame.velocity)
+                            }
+                        }
+                        dragRuntime.dragging = true
                         state.isDragging = true
-                        dragTargetValue = positionAnimation.value
-                        previousDragTimeMillis = null
+                        dragRuntime.targetValue = positionAnimation.value
+                        dragRuntime.previousTimeMillis = null
                         if (!reducedMotion) {
                             animationScope.launch { scaleXAnimation.animateTo(motionSpec.safePressedScale, motionSpec.horizontalScaleSpring) }
                             animationScope.launch { scaleYAnimation.animateTo(motionSpec.safePressedScale, motionSpec.verticalScaleSpring) }
                         }
                     },
                     onDragCancel = {
-                        dragging = false
+                        dragRuntime.motionJob?.cancel()
+                        dragRuntime.dragging = false
                         state.isDragging = false
-                        previousDragTimeMillis = null
-                        visualIndex = selectedIndex
+                        dragRuntime.previousTimeMillis = null
                         animationScope.launch {
                             positionAnimation.animateTo(selectedIndex.toFloat(), motionSpec.positionSpring)
                         }
@@ -178,13 +191,13 @@ fun <T> PrismGlassNavigationBar(
                         animationScope.launch { scaleYAnimation.animateTo(1f, motionSpec.verticalScaleSpring) }
                     },
                     onDragEnd = {
-                        val targetIndex = selectionPolicy.targetIndex(dragTargetValue, items.size)
+                        dragRuntime.motionJob?.cancel()
+                        val targetIndex = selectionPolicy.targetIndex(dragRuntime.targetValue, items.size)
                             .coerceIn(items.indices)
-                        visualIndex = targetIndex
                         state.currentIndex = targetIndex
-                        dragging = false
+                        dragRuntime.dragging = false
                         state.isDragging = false
-                        previousDragTimeMillis = null
+                        dragRuntime.previousTimeMillis = null
                         animationScope.launch {
                             positionAnimation.animateTo(targetIndex.toFloat(), motionSpec.positionSpring)
                             launch { scaleXAnimation.animateTo(1f, motionSpec.horizontalScaleSpring) }
@@ -196,28 +209,22 @@ fun <T> PrismGlassNavigationBar(
                 ) { change, dragAmount ->
                     val itemWidthPx = containerWidthPx / items.size
                     val logicalDirection = if (layoutDirection == LayoutDirection.Ltr) 1f else -1f
-                    dragTargetValue = (dragTargetValue + dragAmount / itemWidthPx * logicalDirection)
+                    dragRuntime.targetValue = (dragRuntime.targetValue + dragAmount / itemWidthPx * logicalDirection)
                         .coerceIn(0f, items.lastIndex.toFloat())
-                    visualIndex = dragTargetValue.roundToInt().coerceIn(items.indices)
-                    state.currentIndex = visualIndex
-                    state.position = dragTargetValue
-                    val elapsedMillis = previousDragTimeMillis
+                    state.currentIndex = dragRuntime.targetValue.roundToInt().coerceIn(items.indices)
+                    state.position = dragRuntime.targetValue
+                    val elapsedMillis = dragRuntime.previousTimeMillis
                         ?.let { (change.uptimeMillis - it).coerceAtLeast(1L) }
                     val instantVelocity = elapsedMillis?.let { dragAmount / it * 1_000f } ?: 0f
-                    previousDragTimeMillis = change.uptimeMillis
-                    if (reducedMotion) {
-                        animationScope.launch { positionAnimation.snapTo(dragTargetValue) }
+                    dragRuntime.previousTimeMillis = change.uptimeMillis
+                    val range = items.lastIndex.coerceAtLeast(1).toFloat()
+                    val normalizedVelocity = if (reducedMotion) {
+                        0f
                     } else {
-                        val range = items.lastIndex.coerceAtLeast(1).toFloat()
-                        val normalizedVelocity = instantVelocity / itemWidthPx / range * logicalDirection
-                        state.velocity = normalizedVelocity
-                        animationScope.launch {
-                            positionAnimation.animateTo(dragTargetValue, motionSpec.positionSpring)
-                        }
-                        animationScope.launch {
-                            velocityAnimation.animateTo(normalizedVelocity, motionSpec.velocitySpring)
-                        }
+                        instantVelocity / itemWidthPx / range * logicalDirection
                     }
+                    state.velocity = normalizedVelocity
+                    dragRuntime.frames.trySend(DragFrame(dragRuntime.targetValue, normalizedVelocity))
                     change.consume()
                 }
             },
@@ -252,7 +259,7 @@ fun <T> PrismGlassNavigationBar(
             backdropState = navigationItemsBackdrop,
             renderSelection = indicatorContent != null,
             onItemSelected = { index, item ->
-                visualIndex = index
+                state.currentIndex = index
                 currentOnItemSelected(item)
             },
             itemContent = itemContent,
@@ -299,6 +306,22 @@ fun <T> PrismGlassNavigationBar(
         }
     }
 }
+
+private class NavigationDragRuntime(initialPosition: Float) {
+    var targetValue = initialPosition
+    var previousTimeMillis: Long? = null
+    var dragging = false
+    var motionJob: Job? = null
+    val frames = Channel<DragFrame>(Channel.CONFLATED)
+
+    fun clearFrames() {
+        while (frames.tryReceive().isSuccess) {
+            continue
+        }
+    }
+}
+
+private data class DragFrame(val position: Float, val velocity: Float)
 
 /** 기본 렌즈 반사 장식 */
 @Composable

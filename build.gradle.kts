@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "com.github.woojaeHEO"
-version = System.getenv("VERSION") ?: "1.3.0"
+version = System.getenv("VERSION") ?: "1.3.1"
 
 android {
     namespace = "io.github.woojaeheo.prismglass"
